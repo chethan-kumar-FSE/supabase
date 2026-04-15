@@ -54,21 +54,22 @@ export default function Auth() {
 
     const credentials = { email: email.trim(), password };
 
-    const { error } = isSignup
-      ? await supabase.auth.signUp(credentials)
-      : await supabase.auth.signInWithPassword(credentials);
+    try {
+      const { error } = isSignup
+        ? await supabase.auth.signUp(credentials)
+        : await supabase.auth.signInWithPassword(credentials);
 
-    if (error) {
-      dispatch({ type: "ERROR", message: error.message });
-      return;
+      if (error) throw error;
+
+      dispatch({
+        type: "SUCCESS",
+        message: isSignup
+          ? "Account created! Check your email to confirm."
+          : "Signed in successfully.",
+      });
+    } catch (err) {
+      dispatch({ type: "ERROR", message: err.message ?? "Something went wrong. Please try again." });
     }
-
-    dispatch({
-      type: "SUCCESS",
-      message: isSignup
-        ? "Account created! Check your email to confirm."
-        : "Signed in successfully.",
-    });
   };
 
   return (
