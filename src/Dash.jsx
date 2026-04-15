@@ -55,6 +55,7 @@ const Dash = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [newTodo, setNewTodo] = useState("");
   const [isAdding, setIsAdding] = useState(false);
+  const [isFetching, setIsFetching] = useState(true);
 
   // Per-item loading: { [id]: "editing" | "deleting" }
   const [itemLoading, setItemLoading] = useState({});
@@ -79,12 +80,20 @@ const Dash = () => {
 
   // ── Fetch ──────────────────────────────────────────────────────────────────
   async function fetchTodos(searchQ) {
-    let query = supabase.from("todo").select("*");
-    const trimmed = searchQ.trim();
-    if (trimmed.length > 0) query = query.ilike("title", `%${trimmed}%`);
-    const { data, error } = await query;
-    if (error) { console.error(error); return; }
-    setTodos(data || []);
+    setIsFetching(true);
+    try {
+      let query = supabase.from("todo").select("*");
+      const trimmed = searchQ.trim();
+      if (trimmed.length > 0) query = query.ilike("title", `%${trimmed}%`);
+      const { data, error } = await query;
+      if (error) throw error;
+      setTodos(data || []);
+    } catch (err) {
+      console.error(err);
+      pushToast("Failed to load quests.", "error");
+    } finally {
+      setIsFetching(false);
+    }
   }
 
   const debouncedFetch = useMemo(() => debounce(fetchTodos, 500), []);
@@ -130,25 +139,30 @@ const Dash = () => {
     setNewTodo("");   // clear input right away — no waiting
     setIsAdding(true);
 
-    const { data, error } = await supabase
-      .from("todo")
-      .insert([{ title }])
-      .select()
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from("todo")
+        .insert([{ title }])
+        .select()
+        .single();
 
-    pendingTempIds.current.delete(tempId);
+      pendingTempIds.current.delete(tempId);
 
-    if (error) {
+      if (error) throw error;
+
+      // Replace temp item with real row (real-time INSERT will be deduplicated)
+      setTodos((prev) => prev.map((t) => (t.id === tempId ? data : t)));
+      pushToast("Quest added to the log.");
+    } catch (err) {
+      console.error(err);
+      pendingTempIds.current.delete(tempId);
       // Roll back the optimistic item
       setTodos((prev) => prev.filter((t) => t.id !== tempId));
       setNewTodo(title); // restore input so user doesn't lose their text
       pushToast("Failed to add quest.", "error");
-    } else {
-      // Replace temp item with real row (real-time INSERT will be deduplicated)
-      setTodos((prev) => prev.map((t) => (t.id === tempId ? data : t)));
-      pushToast("Quest added to the log.");
+    } finally {
+      setIsAdding(false);
     }
-    setIsAdding(false);
   };
 
   // ── Edit ───────────────────────────────────────────────────────────────────
@@ -175,37 +189,42 @@ const Dash = () => {
     setItemLoading((prev) => ({ ...prev, [id]: "editing" }));
     cancelEdit();
 
-    const { error } = await supabase
-      .from("todo")
-      .update({ title: trimmed })
-      .eq("id", id);
+    try {
+      const { error } = await supabase
+        .from("todo")
+        .update({ title: trimmed })
+        .eq("id", id);
 
-    if (error) {
-      pushToast("Failed to update quest.", "error");
-      // Roll back optimistic UI via real-time; no extra work needed
-    } else {
+      if (error) throw error;
+
       // Update local state immediately (real-time also fires but this is faster)
       setTodos((prev) => prev.map((t) => (t.id === id ? { ...t, title: trimmed } : t)));
       pushToast("Quest updated successfully.");
+    } catch (err) {
+      console.error(err);
+      pushToast("Failed to update quest.", "error");
+    } finally {
+      setItemLoading((prev) => { const s = { ...prev }; delete s[id]; return s; });
     }
-
-    setItemLoading((prev) => { const s = { ...prev }; delete s[id]; return s; });
   };
 
   // ── Delete ─────────────────────────────────────────────────────────────────
   const deleteTodo = async (id) => {
     setItemLoading((prev) => ({ ...prev, [id]: "deleting" }));
 
-    const { error } = await supabase.from("todo").delete().eq("id", id);
+    try {
+      const { error } = await supabase.from("todo").delete().eq("id", id);
 
-    if (error) {
-      pushToast("Failed to delete quest.", "error");
-      setItemLoading((prev) => { const s = { ...prev }; delete s[id]; return s; });
-    } else {
+      if (error) throw error;
+
       // Remove locally immediately (real-time also fires)
       setTodos((prev) => prev.filter((t) => t.id !== id));
-      setItemLoading((prev) => { const s = { ...prev }; delete s[id]; return s; });
       pushToast("Quest removed from the log.");
+    } catch (err) {
+      console.error(err);
+      pushToast("Failed to delete quest.", "error");
+    } finally {
+      setItemLoading((prev) => { const s = { ...prev }; delete s[id]; return s; });
     }
   };
 
@@ -313,7 +332,12 @@ const Dash = () => {
         </div>
 
         {/* Quest list */}
-        {todos.length === 0 ? (
+        {isFetching ? (
+          <div className="flex flex-col items-center justify-center py-20 gap-4">
+            <Spinner size="w-6 h-6" color="text-indigo-500" />
+            <p className="text-xs tracking-[0.3em] uppercase text-indigo-700">Loading quests...</p>
+          </div>
+        ) : todos.length === 0 ? (
           <div className="text-center py-20 border border-dashed border-indigo-950">
             <p className="text-indigo-800 text-xs tracking-[0.4em] uppercase mb-2">— No Quests Found —</p>
             <p className="text-indigo-900 text-xs">
@@ -321,6 +345,7 @@ const Dash = () => {
             </p>
           </div>
         ) : (
+
           <ul className="space-y-1">
             {todos.map((t, i) => {
               const loading = itemLoading[t.id];
